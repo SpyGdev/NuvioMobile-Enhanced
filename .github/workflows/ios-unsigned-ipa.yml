@@ -30,10 +30,13 @@ jobs:
       NUVIO_ENGINE_TOKEN: ${{ secrets.NUVIO_ENGINE_TOKEN }}
 
     steps:
-      - name: Check out source and MPVKit
+      - name: Check out source
         uses: actions/checkout@v6
         with:
-          submodules: true
+          submodules: false
+
+      - name: Check out MPVKit
+        run: git submodule update --init --depth=1 MPVKit
 
       - name: Check full-build prerequisites
         if: inputs.distribution == 'full'
