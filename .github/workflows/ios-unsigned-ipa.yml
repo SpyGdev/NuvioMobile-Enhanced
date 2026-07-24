@@ -26,8 +26,6 @@ jobs:
     timeout-minutes: 90
     env:
       IOS_DISTRIBUTION: ${{ inputs.distribution }}
-      NUVIO_ENGINE_REPOSITORY: ${{ secrets.NUVIO_ENGINE_REPOSITORY }}
-      NUVIO_ENGINE_TOKEN: ${{ secrets.NUVIO_ENGINE_TOKEN }}
 
     steps:
       - name: Check out source
@@ -38,28 +36,36 @@ jobs:
       - name: Check out MPVKit
         run: git submodule update --init --depth=1 MPVKit
 
-      - name: Check full-build prerequisites
-        if: inputs.distribution == 'full'
-        run: |
-          if [[ -z "${NUVIO_ENGINE_REPOSITORY}" ]]; then
-            echo "Set the NUVIO_ENGINE_REPOSITORY secret to the repository containing platform/apple/NuvioEngine.xcframework." >&2
-            exit 1
-          fi
-
       - name: Check out Nuvio Engine
         if: inputs.distribution == 'full'
         uses: actions/checkout@v6
         with:
-          repository: ${{ secrets.NUVIO_ENGINE_REPOSITORY }}
-          token: ${{ secrets.NUVIO_ENGINE_TOKEN || github.token }}
+          repository: NuvioMedia/nuvio-engine
+          ref: 86f0865472034e53d14963d88a5e0d48dc033df0
           path: nuvio-engine
+
+      - name: Set up Nuvio Engine build tools
+        if: inputs.distribution == 'full'
+        run: |
+          missing_tools=()
+          command -v cmake >/dev/null 2>&1 || missing_tools+=(cmake)
+          command -v ninja >/dev/null 2>&1 || missing_tools+=(ninja)
+          if (( ${#missing_tools[@]} > 0 )); then
+            brew install "${missing_tools[@]}"
+          fi
+
+      - name: Build Nuvio Engine framework
+        if: inputs.distribution == 'full'
+        working-directory: nuvio-engine
+        run: |
+          NUVIO_BUILD_JOBS=3 ./scripts/build-apple-xcframework.sh
 
       - name: Place Nuvio Engine beside the app repository
         if: inputs.distribution == 'full'
         run: |
           engine_framework="${GITHUB_WORKSPACE}/nuvio-engine/platform/apple/NuvioEngine.xcframework"
           if [[ ! -d "${engine_framework}" ]]; then
-            echo "Nuvio Engine checkout does not contain platform/apple/NuvioEngine.xcframework." >&2
+            echo "Nuvio Engine framework build did not produce NuvioEngine.xcframework." >&2
             exit 1
           fi
           ln -s "${GITHUB_WORKSPACE}/nuvio-engine" "${GITHUB_WORKSPACE}/../nuvio-engine"
