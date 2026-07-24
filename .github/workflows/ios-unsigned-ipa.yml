@@ -1,0 +1,118 @@
+name: Build Unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      distribution:
+        description: iOS source set to build
+        required: true
+        type: choice
+        default: appstore
+        options:
+          - appstore
+          - full
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-unsigned-ipa-${{ github.ref }}-${{ inputs.distribution }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build unsigned ${{ inputs.distribution }} IPA
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      IOS_DISTRIBUTION: ${{ inputs.distribution }}
+      NUVIO_ENGINE_REPOSITORY: ${{ secrets.NUVIO_ENGINE_REPOSITORY }}
+      NUVIO_ENGINE_TOKEN: ${{ secrets.NUVIO_ENGINE_TOKEN }}
+
+    steps:
+      - name: Check out source and MPVKit
+        uses: actions/checkout@v6
+        with:
+          submodules: true
+
+      - name: Check full-build prerequisites
+        if: inputs.distribution == 'full'
+        run: |
+          if [[ -z "${NUVIO_ENGINE_REPOSITORY}" ]]; then
+            echo "Set the NUVIO_ENGINE_REPOSITORY secret to the repository containing platform/apple/NuvioEngine.xcframework." >&2
+            exit 1
+          fi
+
+      - name: Check out Nuvio Engine
+        if: inputs.distribution == 'full'
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ secrets.NUVIO_ENGINE_REPOSITORY }}
+          token: ${{ secrets.NUVIO_ENGINE_TOKEN || github.token }}
+          path: nuvio-engine
+
+      - name: Place Nuvio Engine beside the app repository
+        if: inputs.distribution == 'full'
+        run: |
+          engine_framework="${GITHUB_WORKSPACE}/nuvio-engine/platform/apple/NuvioEngine.xcframework"
+          if [[ ! -d "${engine_framework}" ]]; then
+            echo "Nuvio Engine checkout does not contain platform/apple/NuvioEngine.xcframework." >&2
+            exit 1
+          fi
+          ln -s "${GITHUB_WORKSPACE}/nuvio-engine" "${GITHUB_WORKSPACE}/../nuvio-engine"
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project iosApp/iosApp.xcodeproj \
+            -scheme iosApp \
+            -clonedSourcePackagesDirPath "${RUNNER_TEMP}/SourcePackages"
+
+      - name: Archive without code signing
+        run: |
+          xcodebuild archive \
+            -project iosApp/iosApp.xcodeproj \
+            -scheme iosApp \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "${RUNNER_TEMP}/Nuvio.xcarchive" \
+            -clonedSourcePackagesDirPath "${RUNNER_TEMP}/SourcePackages" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            DEVELOPMENT_TEAM='' \
+            NUVIO_IOS_DISTRIBUTION="${IOS_DISTRIBUTION}"
+
+      - name: Package unsigned IPA
+        run: |
+          app_path="${RUNNER_TEMP}/Nuvio.xcarchive/Products/Applications/Nuvio.app"
+          payload_dir="${RUNNER_TEMP}/ipa/Payload"
+          ipa_path="${GITHUB_WORKSPACE}/Nuvio-${IOS_DISTRIBUTION}-unsigned.ipa"
+
+          if [[ ! -d "${app_path}" ]]; then
+            echo "Archived application was not found at ${app_path}." >&2
+            exit 1
+          fi
+
+          mkdir -p "${payload_dir}"
+          ditto "${app_path}" "${payload_dir}/Nuvio.app"
+          ditto -c -k --sequesterRsrc --keepParent "${payload_dir}" "${ipa_path}"
+
+          unzip -l "${ipa_path}" | grep -q 'Payload/Nuvio.app/Info.plist'
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v6
+        with:
+          name: Nuvio-${{ inputs.distribution }}-unsigned-ipa
+          path: Nuvio-${{ inputs.distribution }}-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30

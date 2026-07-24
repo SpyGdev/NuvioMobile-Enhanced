@@ -10,6 +10,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Arrangement
@@ -28,7 +29,9 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -36,13 +39,17 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CheckCircleOutline
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import com.nuvio.app.core.ui.NuvioLoadingIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -71,9 +78,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import com.nuvio.app.core.build.AppFeaturePolicy
 import com.nuvio.app.core.build.TrailerPlaybackMode
+import com.nuvio.app.core.i18n.localizedSeasonEpisodeCode
 import com.nuvio.app.core.network.NetworkCondition
 import com.nuvio.app.core.network.NetworkStatusRepository
 import com.nuvio.app.core.ui.NuvioBackButton
+import com.nuvio.app.core.ui.NuvioBottomSheetDivider
+import com.nuvio.app.core.ui.NuvioModalBottomSheet
+import com.nuvio.app.core.ui.NuvioToastController
 import com.nuvio.app.core.ui.TraktListPickerDialog
 import com.nuvio.app.core.ui.nuvioSafeBottomPadding
 import com.nuvio.app.features.ai.AiAssistantSettingsRepository
@@ -100,6 +111,7 @@ import com.nuvio.app.features.library.LibraryRepository
 import com.nuvio.app.features.library.toLibraryItem
 import com.nuvio.app.features.player.PlayerSettingsRepository
 import com.nuvio.app.features.settings.NuvioEnhancedSettingsRepository
+import com.nuvio.app.features.streams.BatchEpisodeDownloads
 import com.nuvio.app.features.streams.StreamAutoPlayPolicy
 import com.nuvio.app.features.streams.StreamsRepository
 import com.nuvio.app.features.tmdb.TmdbSettingsRepository
@@ -214,6 +226,9 @@ fun MetaDetailsScreen(
     var observedOfflineState by remember(type, id) { mutableStateOf(false) }
     var selectedEpisodeForActions by remember(type, id) { mutableStateOf<MetaVideo?>(null) }
     var selectedSeasonForActions by remember(type, id) { mutableStateOf<Int?>(null) }
+    var selectedSeasonForDownloads by remember(type, id) { mutableStateOf<Int?>(null) }
+    var batchDownloadInProgress by remember(type, id) { mutableStateOf(false) }
+    var batchDownloadProgress by remember(type, id) { mutableStateOf<Pair<Int, Int>?>(null) }
     val commentsEnabled by remember {
         TraktCommentsSettings.ensureLoaded()
         TraktCommentsSettings.enabled
@@ -1131,6 +1146,15 @@ fun MetaDetailsScreen(
                                 onSaveClick = toggleSaved,
                                 onSaveLongClick = openLibraryListPicker,
                                 onWatchedClick = toggleWatched,
+                                onOpenBatchDownload = if (hasEpisodes) {
+                                    {
+                                        selectedSeasonForDownloads = seriesAction?.seasonNumber
+                                            ?: meta.videos.firstOrNull { it.season != null || it.episode != null }?.season
+                                            ?: 0
+                                    }
+                                } else {
+                                    null
+                                },
                                 showManualPlayOption = showManualPlayOption,
                                 preferredEpisodeSeasonNumber = seriesAction?.seasonNumber,
                                 preferredEpisodeNumber = seriesAction?.episodeNumber,
@@ -1406,6 +1430,55 @@ fun MetaDetailsScreen(
                                         areCurrentlyWatched = false,
                                     )
                                 },
+                                onDownloadSeason = {
+                                    selectedSeasonForDownloads = selectedSeason
+                                },
+                            )
+                        }
+
+                        selectedSeasonForDownloads?.let { seasonForDownloads ->
+                            val batchProgressLabel = batchDownloadProgress?.let { (completed, total) ->
+                                stringResource(
+                                    Res.string.episodes_batch_download_progress,
+                                    completed,
+                                    total,
+                                )
+                            }
+                            BatchEpisodeDownloadSheet(
+                                meta = meta,
+                                initialSeason = seasonForDownloads,
+                                isDownloading = batchDownloadInProgress,
+                                progressText = batchProgressLabel,
+                                onDismiss = {
+                                    if (!batchDownloadInProgress) {
+                                        selectedSeasonForDownloads = null
+                                        batchDownloadProgress = null
+                                    }
+                                },
+                                onDownload = { episodes ->
+                                    if (episodes.isEmpty() || batchDownloadInProgress) return@BatchEpisodeDownloadSheet
+                                    detailsScope.launch {
+                                        batchDownloadInProgress = true
+                                        batchDownloadProgress = 0 to episodes.size
+                                        val summary = BatchEpisodeDownloads.enqueueEpisodes(
+                                            meta = meta,
+                                            episodes = episodes,
+                                            onEpisodeFinished = { progress ->
+                                                batchDownloadProgress = progress.completed to progress.total
+                                            },
+                                        )
+                                        batchDownloadInProgress = false
+                                        selectedSeasonForDownloads = null
+                                        batchDownloadProgress = null
+                                        NuvioToastController.show(
+                                            getString(
+                                                Res.string.episodes_batch_download_complete,
+                                                summary.successful,
+                                                summary.requested,
+                                            ),
+                                        )
+                                    }
+                                },
                             )
                         }
 
@@ -1572,6 +1645,240 @@ private fun areEpisodesWatchedForActions(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun BatchEpisodeDownloadSheet(
+    meta: MetaDetails,
+    initialSeason: Int,
+    isDownloading: Boolean,
+    progressText: String?,
+    onDismiss: () -> Unit,
+    onDownload: (List<MetaVideo>) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val groupedEpisodes = remember(meta.videos) {
+        meta.videos
+            .filter { it.season != null || it.episode != null }
+            .sortedWith(metaVideoSeasonEpisodeComparator)
+            .groupBy { normalizeSeasonNumber(it.season) }
+    }
+    val seasons = remember(groupedEpisodes) { groupedEpisodes.keys.sortedBy(::seasonSortKey) }
+    val selectedInitialSeason = initialSeason.takeIf { it in groupedEpisodes } ?: seasons.firstOrNull() ?: 0
+    var selectedSeason by remember(meta.id, selectedInitialSeason) { mutableIntStateOf(selectedInitialSeason) }
+    val seasonEpisodes = groupedEpisodes[selectedSeason].orEmpty()
+    val episodeNumbers = seasonEpisodes.mapNotNull { it.episode }.distinct().sorted()
+    val firstEpisodeNumber = episodeNumbers.firstOrNull() ?: 1
+    val lastEpisodeNumber = episodeNumbers.lastOrNull() ?: firstEpisodeNumber
+    var rangeStart by remember(meta.id, selectedSeason, firstEpisodeNumber) { mutableIntStateOf(firstEpisodeNumber) }
+    var rangeEnd by remember(meta.id, selectedSeason, lastEpisodeNumber) { mutableIntStateOf(lastEpisodeNumber) }
+    var selectedEpisodeKeys by remember(meta.id, selectedSeason) {
+        mutableStateOf(seasonEpisodes.mapIndexed { index, episode -> episode.batchSelectionKey(index) }.toSet())
+    }
+    val rangeEpisodes = remember(seasonEpisodes, rangeStart, rangeEnd) {
+        val low = minOf(rangeStart, rangeEnd)
+        val high = maxOf(rangeStart, rangeEnd)
+        seasonEpisodes.filter { episode ->
+            val number = episode.episode
+            number == null || number in low..high
+        }
+    }
+    val selectedEpisodes = remember(seasonEpisodes, selectedEpisodeKeys) {
+        seasonEpisodes.filterIndexed { index, episode -> episode.batchSelectionKey(index) in selectedEpisodeKeys }
+    }
+    val downloadAllLabel = stringResource(Res.string.episodes_batch_download_all, seasonEpisodes.size)
+    val downloadRangeLabel = stringResource(Res.string.episodes_batch_download_range, rangeStart, rangeEnd)
+    val downloadSelectedLabel = stringResource(Res.string.episodes_batch_download_selected, selectedEpisodes.size)
+
+    NuvioModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        fullHeight = true,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = nuvioSafeBottomPadding(18.dp)),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text(
+                text = stringResource(Res.string.episodes_batch_download_title),
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            if (seasons.size > 1) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    seasons.forEach { season ->
+                        OutlinedButton(
+                            onClick = { selectedSeason = season },
+                            enabled = !isDownloading,
+                        ) {
+                            Text(text = selectedSeasonLabel(season))
+                        }
+                    }
+                }
+            }
+            Button(
+                onClick = { onDownload(seasonEpisodes) },
+                enabled = seasonEpisodes.isNotEmpty() && !isDownloading,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(text = downloadAllLabel)
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BatchRangeStepper(
+                    label = stringResource(Res.string.episodes_batch_from),
+                    value = rangeStart,
+                    min = firstEpisodeNumber,
+                    max = lastEpisodeNumber,
+                    enabled = !isDownloading,
+                    onChange = { rangeStart = it },
+                    modifier = Modifier.weight(1f),
+                )
+                BatchRangeStepper(
+                    label = stringResource(Res.string.episodes_batch_to),
+                    value = rangeEnd,
+                    min = firstEpisodeNumber,
+                    max = lastEpisodeNumber,
+                    enabled = !isDownloading,
+                    onChange = { rangeEnd = it },
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            OutlinedButton(
+                onClick = { onDownload(rangeEpisodes) },
+                enabled = rangeEpisodes.isNotEmpty() && !isDownloading,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(text = downloadRangeLabel)
+            }
+            NuvioBottomSheetDivider()
+            Text(
+                text = stringResource(Res.string.episodes_batch_individual),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(280.dp),
+            ) {
+                items(seasonEpisodes.mapIndexed { index, episode -> index to episode }) { (index, episode) ->
+                    val key = episode.batchSelectionKey(index)
+                    val checked = key in selectedEpisodeKeys
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !isDownloading) {
+                                selectedEpisodeKeys = if (checked) {
+                                    selectedEpisodeKeys - key
+                                } else {
+                                    selectedEpisodeKeys + key
+                                }
+                            }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = checked,
+                            onCheckedChange = { next ->
+                                selectedEpisodeKeys = if (next) selectedEpisodeKeys + key else selectedEpisodeKeys - key
+                            },
+                            enabled = !isDownloading,
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = localizedEpisodeDownloadTitle(episode),
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                            )
+                            Text(
+                                text = episode.title,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = { onDownload(selectedEpisodes) },
+                enabled = selectedEpisodes.isNotEmpty() && !isDownloading,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(text = if (isDownloading) progressText ?: stringResource(Res.string.episodes_batch_downloading) else downloadSelectedLabel)
+            }
+        }
+    }
+}
+
+@Composable
+private fun BatchRangeStepper(
+    label: String,
+    value: Int,
+    min: Int,
+    max: Int,
+    enabled: Boolean,
+    onChange: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedButton(
+                onClick = { onChange((value - 1).coerceAtLeast(min)) },
+                enabled = enabled && value > min,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("-")
+            }
+            Text(
+                text = value.toString(),
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            OutlinedButton(
+                onClick = { onChange((value + 1).coerceAtMost(max)) },
+                enabled = enabled && value < max,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text("+")
+            }
+        }
+    }
+}
+
+@Composable
+private fun localizedEpisodeDownloadTitle(episode: MetaVideo): String =
+    localizedSeasonEpisodeCode(
+        seasonNumber = episode.season,
+        episodeNumber = episode.episode,
+    ).orEmpty().ifBlank { episode.title }
+
+private fun MetaVideo.batchSelectionKey(index: Int): String =
+    id.takeIf { it.isNotBlank() }
+        ?: "${season ?: 0}:${episode ?: index}:$index"
+
 private fun extractImdbId(value: String?): String? =
     value
         ?.trim()
@@ -1619,6 +1926,7 @@ private fun LazyListScope.configuredMetaSectionItems(
     onSaveClick: () -> Unit,
     onSaveLongClick: (() -> Unit)?,
     onWatchedClick: () -> Unit,
+    onOpenBatchDownload: (() -> Unit)?,
     showManualPlayOption: Boolean,
     preferredEpisodeSeasonNumber: Int?,
     preferredEpisodeNumber: Int?,
@@ -1704,6 +2012,7 @@ private fun LazyListScope.configuredMetaSectionItems(
                     onSaveClick = onSaveClick,
                     onSaveLongClick = onSaveLongClick,
                     onWatchedClick = onWatchedClick,
+                    onOpenBatchDownload = onOpenBatchDownload,
                     showManualPlayOption = showManualPlayOption,
                     preferredEpisodeSeasonNumber = preferredEpisodeSeasonNumber,
                     preferredEpisodeNumber = preferredEpisodeNumber,
@@ -1854,6 +2163,7 @@ private fun ConfiguredMetaSections(
     onSaveClick: () -> Unit,
     onSaveLongClick: (() -> Unit)?,
     onWatchedClick: () -> Unit,
+    onOpenBatchDownload: (() -> Unit)?,
     showManualPlayOption: Boolean,
     preferredEpisodeSeasonNumber: Int?,
     preferredEpisodeNumber: Int?,
@@ -1913,37 +2223,50 @@ private fun ConfiguredMetaSections(
                 DetailActionButtons(
                     playLabel = playButtonLabel,
                     featuredAction = featuredAction,
-                    secondaryActions = listOf(
-                        DetailSecondaryAction(
-                            label = if (isWatched) {
-                                stringResource(Res.string.hero_mark_unwatched)
-                            } else {
-                                stringResource(Res.string.hero_mark_watched)
-                            },
-                            icon = if (isWatched) {
-                                Icons.Default.CheckCircle
-                            } else {
-                                Icons.Default.CheckCircleOutline
-                            },
-                            isActive = isWatched,
-                            onClick = onWatchedClick,
-                        ),
-                        DetailSecondaryAction(
-                            label = if (isSaved) {
-                                stringResource(Res.string.hero_remove_from_library)
-                            } else {
-                                stringResource(Res.string.hero_add_to_library)
-                            },
-                            icon = if (isSaved) {
-                                Icons.Default.Check
-                            } else {
-                                Icons.Default.Add
-                            },
-                            isActive = isSaved,
-                            onClick = onSaveClick,
-                            onLongClick = onSaveLongClick,
-                        ),
-                    ),
+                    secondaryActions = buildList {
+                        add(
+                            DetailSecondaryAction(
+                                label = if (isWatched) {
+                                    stringResource(Res.string.hero_mark_unwatched)
+                                } else {
+                                    stringResource(Res.string.hero_mark_watched)
+                                },
+                                icon = if (isWatched) {
+                                    Icons.Default.CheckCircle
+                                } else {
+                                    Icons.Default.CheckCircleOutline
+                                },
+                                isActive = isWatched,
+                                onClick = onWatchedClick,
+                            ),
+                        )
+                        add(
+                            DetailSecondaryAction(
+                                label = if (isSaved) {
+                                    stringResource(Res.string.hero_remove_from_library)
+                                } else {
+                                    stringResource(Res.string.hero_add_to_library)
+                                },
+                                icon = if (isSaved) {
+                                    Icons.Default.Check
+                                } else {
+                                    Icons.Default.Add
+                                },
+                                isActive = isSaved,
+                                onClick = onSaveClick,
+                                onLongClick = onSaveLongClick,
+                            ),
+                        )
+                        if (onOpenBatchDownload != null) {
+                            add(
+                                DetailSecondaryAction(
+                                    label = stringResource(Res.string.episodes_batch_download_action),
+                                    icon = Icons.Rounded.Download,
+                                    onClick = onOpenBatchDownload,
+                                ),
+                            )
+                        }
+                    },
                     isTablet = isTablet,
                     onPlayClick = onPrimaryPlayClick,
                     onPlayLongClick = if (showManualPlayOption) onPrimaryPlayLongClick else null,

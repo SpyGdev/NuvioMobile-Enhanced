@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PlaylistAddCheckCircle
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -48,6 +49,7 @@ import nuvio.composeapp.generated.resources.episode_mark_season_unwatched
 import nuvio.composeapp.generated.resources.episode_mark_season_watched
 import nuvio.composeapp.generated.resources.episode_mark_unwatched
 import nuvio.composeapp.generated.resources.episode_mark_watched
+import nuvio.composeapp.generated.resources.episodes_download_season
 import nuvio.composeapp.generated.resources.play_manually
 import org.jetbrains.compose.resources.stringResource
 
@@ -149,6 +151,7 @@ fun SeasonWatchedActionSheet(
     onDismiss: () -> Unit,
     onToggleSeasonWatched: () -> Unit,
     onMarkPreviousSeasonsWatched: () -> Unit,
+    onDownloadSeason: (() -> Unit)? = null,
 ) {
     NuvioMediaActionOverlay(
         artworkUrl = null,
@@ -200,6 +203,17 @@ fun SeasonWatchedActionSheet(
                             title = stringResource(Res.string.episode_mark_previous_seasons_watched),
                             onClick = {
                                 onMarkPreviousSeasonsWatched()
+                                onDismiss()
+                            },
+                        )
+                    }
+                    if (onDownloadSeason != null) {
+                        EpisodeSheetDivider()
+                        EpisodeSheetActionRow(
+                            icon = Icons.Rounded.Download,
+                            title = stringResource(Res.string.episodes_download_season, seasonLabel),
+                            onClick = {
+                                onDownloadSeason()
                                 onDismiss()
                             },
                         )
