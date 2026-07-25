@@ -79,6 +79,7 @@ jobs:
           missing_tools=()
           command -v cmake >/dev/null 2>&1 || missing_tools+=(cmake)
           command -v ninja >/dev/null 2>&1 || missing_tools+=(ninja)
+          command -v rg >/dev/null 2>&1 || missing_tools+=(ripgrep)
           if (( ${#missing_tools[@]} > 0 )); then
             brew install "${missing_tools[@]}"
           fi
