@@ -7,7 +7,7 @@ on:
         description: iOS source set to build
         required: true
         type: choice
-        default: appstore
+        default: full
         options:
           - appstore
           - full
@@ -36,6 +36,35 @@ jobs:
       - name: Check out MPVKit
         run: git submodule update --init --depth=1 MPVKit
 
+      - name: Select Xcode 26 toolchain
+        shell: bash
+        run: |
+          xcode_application=''
+          for candidate in /Applications/Xcode_26*.app; do
+            if [[ -d "${candidate}" ]]; then
+              xcode_application="${candidate}"
+            fi
+          done
+          if [[ -z "${xcode_application}" ]]; then
+            echo "No Xcode 26 installation is available on this macos-15 runner." >&2
+            exit 1
+          fi
+          export DEVELOPER_DIR="${xcode_application}/Contents/Developer"
+          if [[ ! -x "${DEVELOPER_DIR}/usr/bin/xcodebuild" ]]; then
+            echo "Required Xcode toolchain is unavailable at ${DEVELOPER_DIR}." >&2
+            exit 1
+          fi
+          xcodebuild -version
+          xcode_version=$(xcodebuild -version | awk 'NR == 1 { print $2 }')
+          if [[ "${xcode_version}" != 26.* ]]; then
+            echo "Nuvio Engine requires Xcode 26, found ${xcode_version}." >&2
+            exit 1
+          fi
+          xcrun --sdk macosx --show-sdk-path
+          xcrun --sdk iphoneos --show-sdk-path
+          xcrun --sdk iphonesimulator --show-sdk-path
+          echo "DEVELOPER_DIR=${DEVELOPER_DIR}" >> "${GITHUB_ENV}"
+
       - name: Check out Nuvio Engine
         if: inputs.distribution == 'full'
         uses: actions/checkout@v6
@@ -54,18 +83,18 @@ jobs:
             brew install "${missing_tools[@]}"
           fi
 
-      - name: Patch Nuvio Engine Apple C++ availability
-        if: inputs.distribution == 'full'
-        working-directory: nuvio-engine
-        run: |
-          perl -0pi -e 's/-DCMAKE_CXX_FLAGS="\$reproducible_flags"/-DCMAKE_CXX_FLAGS="\$reproducible_flags -D_LIBCPP_DISABLE_AVAILABILITY"/' scripts/build-apple-xcframework.sh
-          grep -q '_LIBCPP_DISABLE_AVAILABILITY' scripts/build-apple-xcframework.sh
-
       - name: Build Nuvio Engine framework
         if: inputs.distribution == 'full'
         working-directory: nuvio-engine
         run: |
           NUVIO_BUILD_JOBS=3 ./scripts/build-apple-xcframework.sh
+
+      - name: Verify Nuvio Engine framework
+        if: inputs.distribution == 'full'
+        working-directory: nuvio-engine
+        run: |
+          ./scripts/verify-apple-xcframework.sh
+          ./scripts/smoke-apple-xcframework.sh
 
       - name: Place Nuvio Engine beside the app repository
         if: inputs.distribution == 'full'
@@ -123,6 +152,12 @@ jobs:
           ditto "${app_path}" "${payload_dir}/Nuvio.app"
           ditto -c -k --sequesterRsrc --keepParent "${payload_dir}" "${ipa_path}"
 
+          app_executable=$(plutil -extract CFBundleExecutable raw "${app_path}/Info.plist")
+          if [[ ! -f "${app_path}/${app_executable}" ]]; then
+            echo "Archived application executable was not found at ${app_path}/${app_executable}." >&2
+            exit 1
+          fi
+          unzip -t "${ipa_path}" >/dev/null
           unzip -l "${ipa_path}" | grep -q 'Payload/Nuvio.app/Info.plist'
 
       - name: Upload unsigned IPA
