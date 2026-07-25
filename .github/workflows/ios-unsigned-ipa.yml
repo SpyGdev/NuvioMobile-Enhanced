@@ -54,6 +54,13 @@ jobs:
             brew install "${missing_tools[@]}"
           fi
 
+      - name: Patch Nuvio Engine Apple C++ availability
+        if: inputs.distribution == 'full'
+        working-directory: nuvio-engine
+        run: |
+          perl -0pi -e 's/-DCMAKE_CXX_FLAGS="\$reproducible_flags"/-DCMAKE_CXX_FLAGS="\$reproducible_flags -D_LIBCPP_DISABLE_AVAILABILITY"/' scripts/build-apple-xcframework.sh
+          grep -q '_LIBCPP_DISABLE_AVAILABILITY' scripts/build-apple-xcframework.sh
+
       - name: Build Nuvio Engine framework
         if: inputs.distribution == 'full'
         working-directory: nuvio-engine
