@@ -91,6 +91,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import coil3.compose.AsyncImage
 import com.nuvio.app.core.ui.nuvioSafeBottomPadding
 import com.nuvio.app.features.debrid.DebridSettingsRepository
+import com.nuvio.app.features.details.MetaDetailsRepository
 import com.nuvio.app.features.debrid.DirectDebridPlayableResult
 import com.nuvio.app.features.debrid.DirectDebridPlaybackResolver
 import com.nuvio.app.features.debrid.toastMessage
@@ -164,6 +165,7 @@ fun StreamsScreen(
     val streamLinkCopiedText = stringResource(Res.string.streams_link_copied)
     val noDirectStreamLinkText = stringResource(Res.string.streams_no_direct_link)
     var streamActionsTarget by remember(videoId) { mutableStateOf<StreamItem?>(null) }
+    var batchDownloadInProgress by remember(videoId) { mutableStateOf(false) }
     var sourcePinTarget by remember(videoId) { mutableStateOf<AddonStreamGroup?>(null) }
     var sourceUnpinTarget by remember(videoId) { mutableStateOf<AddonStreamGroup?>(null) }
     val sourcePinningEnabled = enhancedSettings.streamSourcePinningEnabled
@@ -439,7 +441,33 @@ fun StreamsScreen(
                 }
             },
             onDownload = { stream ->
-                if (DirectDebridPlaybackResolver.shouldResolveToPlayableStream(stream)) {
+                if (batchDownloadInProgress) return@StreamActionsSheet
+                val isSeasonDownload = type.equals("series", ignoreCase = true) && seasonNumber != null
+                if (isSeasonDownload) {
+                    downloadScope.launch {
+                        batchDownloadInProgress = true
+                        val meta = MetaDetailsRepository.fetch(parentMetaType, parentMetaId)
+                        val seasonEpisodes = meta?.videos
+                            ?.filter { it.season == seasonNumber }
+                            .orEmpty()
+                        try {
+                            if (meta == null || seasonEpisodes.isEmpty()) {
+                                NuvioToastController.show(noDirectStreamLinkText)
+                            } else {
+                                val summary = BatchEpisodeDownloads.enqueueEpisodes(
+                                    meta = meta,
+                                    episodes = seasonEpisodes,
+                                    preferredSource = stream,
+                                )
+                                NuvioToastController.show(
+                                    "Downloaded ${summary.successful} of ${summary.requested} episodes",
+                                )
+                            }
+                        } finally {
+                            batchDownloadInProgress = false
+                        }
+                    }
+                } else if (DirectDebridPlaybackResolver.shouldResolveToPlayableStream(stream)) {
                     downloadScope.launch {
                         val resolved = DirectDebridPlaybackResolver.resolveToPlayableStream(
                             stream = stream,

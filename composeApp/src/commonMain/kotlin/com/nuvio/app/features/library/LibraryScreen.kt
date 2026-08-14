@@ -262,6 +262,9 @@ fun LibraryScreen(
         downloadActionCommands.collect { command ->
             when (command) {
                 is LibraryDownloadActionCommand.Delete -> {
+                    command.target.downloads.forEach { item ->
+                        DownloadsRepository.cancelDownload(item.id)
+                    }
                     pendingDeleteDownloadTarget = command.target
                     disintegratingDownloadKey = command.target.entryKey
                 }

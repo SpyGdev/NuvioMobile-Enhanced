@@ -33,6 +33,7 @@ object BatchEpisodeDownloads {
     suspend fun enqueueEpisodes(
         meta: MetaDetails,
         episodes: List<MetaVideo>,
+        preferredSource: StreamItem? = null,
         onEpisodeFinished: (BatchEpisodeDownloadProgress) -> Unit = {},
     ): BatchEpisodeDownloadSummary {
         DownloadsRepository.ensureLoaded()
@@ -55,6 +56,7 @@ object BatchEpisodeDownloads {
                 meta = meta,
                 episode = episode,
                 installedAddonNames = installedAddonNames,
+                preferredSource = preferredSource,
             )
 
             if (stream == null) {
@@ -102,6 +104,7 @@ object BatchEpisodeDownloads {
         meta: MetaDetails,
         episode: MetaVideo,
         installedAddonNames: Set<String>,
+        preferredSource: StreamItem?,
     ): StreamItem? {
         val streams = loadStreams(meta, episode)
         if (streams.isEmpty()) return null
@@ -112,17 +115,21 @@ object BatchEpisodeDownloads {
         val mode = playerSettings.streamAutoPlayMode.takeUnless { it == StreamAutoPlayMode.MANUAL }
             ?: StreamAutoPlayMode.FIRST_STREAM
 
-        val selected = StreamAutoPlaySelector.selectAutoPlayStream(
-            streams = streams,
-            mode = mode,
-            regexPattern = playerSettings.streamAutoPlayRegex,
-            source = playerSettings.streamAutoPlaySource,
-            installedAddonNames = installedAddonNames,
-            selectedAddons = playerSettings.streamAutoPlaySelectedAddons,
-            selectedPlugins = playerSettings.streamAutoPlaySelectedPlugins,
-            debridEnabled = debridSettings.canResolvePlayableLinks,
-            activeResolverProviderId = debridSettings.activeResolverProviderId,
-        ) ?: streams.firstOrNull { it.playableDirectUrl != null }
+        val selected = if (preferredSource != null) {
+            streams.firstOrNull { it.matchesBatchSource(preferredSource) }
+        } else {
+            StreamAutoPlaySelector.selectAutoPlayStream(
+                streams = streams,
+                mode = mode,
+                regexPattern = playerSettings.streamAutoPlayRegex,
+                source = playerSettings.streamAutoPlaySource,
+                installedAddonNames = installedAddonNames,
+                selectedAddons = playerSettings.streamAutoPlaySelectedAddons,
+                selectedPlugins = playerSettings.streamAutoPlaySelectedPlugins,
+                debridEnabled = debridSettings.canResolvePlayableLinks,
+                activeResolverProviderId = debridSettings.activeResolverProviderId,
+            ) ?: streams.firstOrNull { it.playableDirectUrl != null }
+        }
 
         return when {
             selected == null -> null
@@ -285,6 +292,21 @@ data class BatchEpisodeDownloadSummary(
 ) {
     val successful: Int
         get() = queued + replaced
+}
+
+private fun StreamItem.matchesBatchSource(preferred: StreamItem): Boolean {
+    if (addonId != preferred.addonId) return false
+    if (!sourceName.equals(preferred.sourceName, ignoreCase = true)) return false
+
+    val preferredHash = preferred.p2pInfoHash?.lowercase()
+    val currentHash = p2pInfoHash?.lowercase()
+    if (preferredHash != null || currentHash != null) return preferredHash == currentHash
+
+    val preferredLabel = preferred.streamLabel.trim().lowercase()
+    val currentLabel = streamLabel.trim().lowercase()
+    if (preferredLabel != currentLabel) return false
+
+    return preferred.streamType == null || streamType.equals(preferred.streamType, ignoreCase = true)
 }
 
 private fun buildBatchPlaybackVideoId(parentMetaId: String, episode: MetaVideo): String =
