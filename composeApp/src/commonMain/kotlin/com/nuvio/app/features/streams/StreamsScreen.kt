@@ -442,7 +442,7 @@ fun StreamsScreen(
             },
             onDownload = { stream ->
                 if (batchDownloadInProgress) return@StreamActionsSheet
-                val isSeasonDownload = type.equals("series", ignoreCase = true) && seasonNumber != null
+                val isSeasonDownload = type.equals("series", ignoreCase = true) && seasonNumber != null && episodeNumber == null
                 if (isSeasonDownload) {
                     downloadScope.launch {
                         batchDownloadInProgress = true

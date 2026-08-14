@@ -106,7 +106,11 @@ object BatchEpisodeDownloads {
         installedAddonNames: Set<String>,
         preferredSource: StreamItem?,
     ): StreamItem? {
-        val streams = loadStreams(meta, episode)
+        val streams = loadStreams(
+            meta = meta,
+            episode = episode,
+            preferredSource = preferredSource,
+        )
         if (streams.isEmpty()) return null
 
         PlayerSettingsRepository.ensureLoaded()
@@ -144,8 +148,18 @@ object BatchEpisodeDownloads {
         }
     }
 
-    private suspend fun loadStreams(meta: MetaDetails, episode: MetaVideo): List<StreamItem> {
-        MetaDetailsRepository.findEmbeddedStreams(episode.id).takeIf { it.isNotEmpty() }?.let { return it }
+    private suspend fun loadStreams(
+        meta: MetaDetails,
+        episode: MetaVideo,
+        preferredSource: StreamItem? = null,
+    ): List<StreamItem> {
+        MetaDetailsRepository.findEmbeddedStreams(episode.id)
+            .takeIf { it.isNotEmpty() }
+            ?.let { embeddedStreams ->
+                if (preferredSource == null) return embeddedStreams
+                val matchingEmbeddedStreams = embeddedStreams.filter { it.matchesBatchSource(preferredSource) }
+                if (matchingEmbeddedStreams.isNotEmpty()) return matchingEmbeddedStreams
+            }
 
         val type = meta.type
         val videoId = episode.id.takeIf { it.isNotBlank() } ?: buildBatchPlaybackVideoId(meta.id, episode)
@@ -297,14 +311,6 @@ data class BatchEpisodeDownloadSummary(
 private fun StreamItem.matchesBatchSource(preferred: StreamItem): Boolean {
     if (addonId != preferred.addonId) return false
     if (!sourceName.equals(preferred.sourceName, ignoreCase = true)) return false
-
-    val preferredHash = preferred.p2pInfoHash?.lowercase()
-    val currentHash = p2pInfoHash?.lowercase()
-    if (preferredHash != null || currentHash != null) return preferredHash == currentHash
-
-    val preferredLabel = preferred.streamLabel.trim().lowercase()
-    val currentLabel = streamLabel.trim().lowercase()
-    if (preferredLabel != currentLabel) return false
 
     return preferred.streamType == null || streamType.equals(preferred.streamType, ignoreCase = true)
 }
